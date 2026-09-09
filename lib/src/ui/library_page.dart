@@ -24,6 +24,21 @@ class _LibraryPageState extends State<LibraryPage> {
   final _libraryCache = ScoreLibraryCache();
   final _entries = <ScoreLibraryEntry>[];
   final _openingPaths = <String>{};
+
+  /// In-memory retention budget for fully opened score documents.
+  ///
+  /// Every hydrated [ScoreDocument] keeps all rendered page images and the
+  /// playback event list, so playing through a large collection must not
+  /// accumulate one document per piece. Only the [\_maxRetainedDocuments]
+  /// most recently used non-bundled documents stay loaded; older ones are
+  /// demoted back to metadata-only entries (cover + sidecar metadata) and
+  /// reopen cheaply from the gzipped document sidecar written by
+  /// [MuseScoreBridge] (no second native render).
+  static const _maxRetainedDocuments = 5;
+
+  /// Source paths of hydrated documents, most recently used first. Mirrors
+  /// the collection so eviction never touches an entry outside this list.
+  final _retentionOrder = <String>[];
   ReaderQueue? _queue;
   bool _loading = true;
   String? _error;
@@ -58,6 +73,7 @@ class _LibraryPageState extends State<LibraryPage> {
       _entries
         ..clear()
         ..addAll(placeholders);
+      _retentionOrder.clear();
       _loading = false;
       _error = firstError;
     });
@@ -140,6 +156,7 @@ class _LibraryPageState extends State<LibraryPage> {
       _entries
         ..clear()
         ..addAll(placeholders);
+      _retentionOrder.clear();
       _loading = false;
       _error = null;
     });
@@ -171,6 +188,7 @@ class _LibraryPageState extends State<LibraryPage> {
   Future<void> _openEntry(ScoreLibraryEntry entry) async {
     final loaded = entry.document;
     if (loaded != null) {
+      if (!entry.isBundled) _markRetained(entry.sourcePath);
       _openReader(entry);
       return;
     }
@@ -231,7 +249,15 @@ class _LibraryPageState extends State<LibraryPage> {
           }
           _openingPaths.remove(entry.sourcePath);
           _error = null;
+          if (!entry.isBundled &&
+              index >= 0 &&
+              _entries[index].document != null) {
+            _retentionOrder
+              ..remove(entry.sourcePath)
+              ..insert(0, entry.sourcePath);
+          }
         });
+        _trimRetainedDocuments();
       }
       return hydrated;
     } catch (error) {
@@ -259,6 +285,65 @@ class _LibraryPageState extends State<LibraryPage> {
         ),
       ),
     );
+  }
+
+  /// Move a hydrated source path to the front of the retention order.
+  void _markRetained(String sourcePath) {
+    _retentionOrder
+      ..remove(sourcePath)
+      ..insert(0, sourcePath);
+  }
+
+  /// Metadata-only copy of a hydrated entry: the cover and sidecar metadata
+  /// stay so the card keeps its preview, but the heavy [ScoreDocument] is
+  /// released. Reopening later reloads the gzipped document sidecar (or the
+  /// native renderer as a fallback) on demand.
+  ScoreLibraryEntry _demotedCopy(ScoreLibraryEntry entry) {
+    return ScoreLibraryEntry(
+      sourcePath: entry.sourcePath,
+      fileName: entry.fileName,
+      format: entry.format,
+      title: entry.title,
+      composer: entry.composer,
+      pageCount: entry.pageCount,
+      durationUs: entry.durationUs,
+      coverBytes: entry.coverBytes,
+      assetPath: entry.assetPath,
+    );
+  }
+
+  /// Demote the least recently used documents beyond the retention budget
+  /// (bundled demo is never part of the budget). Keeps memory bounded when a
+  /// collection is played through continuously.
+  void _trimRetainedDocuments() {
+    if (!mounted || _retentionOrder.length <= _maxRetainedDocuments) return;
+    final demote = <String>[];
+    var retainedCount = 0;
+    for (final path in _retentionOrder) {
+      final hydrated = _entries.any(
+        (entry) =>
+            entry.sourcePath == path &&
+            !entry.isBundled &&
+            entry.document != null,
+      );
+      if (!hydrated) continue;
+      retainedCount += 1;
+      if (retainedCount > _maxRetainedDocuments) demote.add(path);
+    }
+    if (demote.isEmpty) return;
+    setState(() {
+      for (final path in demote) {
+        final index = _entries.indexWhere(
+          (entry) =>
+              entry.sourcePath == path &&
+              !entry.isBundled &&
+              entry.document != null,
+        );
+        if (index < 0) continue;
+        _entries[index] = _demotedCopy(_entries[index]);
+        _retentionOrder.remove(path);
+      }
+    });
   }
 
   void _showMessage(String message) {
