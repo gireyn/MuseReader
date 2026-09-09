@@ -62,6 +62,9 @@ class _ReaderPageState extends State<ReaderPage> {
     if (!mounted) return;
     final wasPlaying = _wasPlaying;
     _wasPlaying = _playback.isPlaying;
+    if (!wasPlaying && _wasPlaying) {
+      widget.queue?.recordCurrent();
+    }
     final cursor = _playback.cursorPosition;
     final page = cursor?.pageIndex ?? _playback.currentPage;
     final pageChanged = page != _visiblePage;
@@ -157,7 +160,7 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   Future<void> _play() async {
-    widget.queue?.recordCurrent();
+    if (!mounted) return;
     await _playback.play();
   }
 

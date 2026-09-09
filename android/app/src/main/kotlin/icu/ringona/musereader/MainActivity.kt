@@ -326,8 +326,8 @@ class MainActivity : FlutterActivity() {
     /**
      * Import every valid score file found DIRECTLY inside the folder of a
      * granted tree (non-recursive). The previous library is replaced: the
-     * import directory is cleared first and only this folder's scores are
-     * copied back in, ordered by display name so the library keeps a stable,
+     * replacement is staged before the old collection is removed, ordered
+     * by display name so the library keeps a stable,
      * predictable collection. Each copy carries a descending modification
      * time so the newest-first listing reproduces the import order after a
      * process restart.
@@ -335,34 +335,29 @@ class MainActivity : FlutterActivity() {
     private fun importScoreFolder(treeUriString: String, documentId: String): List<String> {
         val tree = Uri.parse(treeUriString)
         val directory = importedScoresDirectory()
-        directory.listFiles()?.forEach { it.delete() }
         val children = treeChildren(tree, effectiveTreeDocumentId(tree, documentId))
             .filter { row ->
                 row.mime != DocumentsContract.Document.MIME_TYPE_DIR &&
                     isSupportedScoreFile(row.displayName)
             }
             .sortedBy { row -> row.displayName.lowercase() }
-        if (children.isEmpty()) return emptyList()
-
         val base = System.currentTimeMillis()
-        val imported = ArrayList<String>(children.size)
-        children.forEachIndexed { index, row ->
-            val childUri = DocumentsContract.buildDocumentUriUsingTree(
-                tree,
-                row.documentId,
-            )
-            val safeName = row.displayName.replace(Regex("[^A-Za-z0-9._-]"), "_")
-            val target = File(directory, "${base - index}_$safeName")
-            contentResolver.openInputStream(childUri).use { input ->
-                requireNotNull(input) { "Cannot open ${row.displayName}." }
-                target.outputStream().use { output -> input.copyTo(output) }
+        return replaceImportedScores(directory) { staging ->
+            children.mapIndexed { index, row ->
+                val childUri = DocumentsContract.buildDocumentUriUsingTree(
+                    tree,
+                    row.documentId,
+                )
+                val safeName = row.displayName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                val target = File(staging, "${base - index}_$safeName")
+                contentResolver.openInputStream(childUri).use { input ->
+                    requireNotNull(input) { "Cannot open ${row.displayName}." }
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                target.setLastModified(base - index)
+                target.name
             }
-            // Some providers ignore setLastModified; the numeric name prefix
-            // keeps the per-file identity unique across imports either way.
-            target.setLastModified(base - index)
-            imported += target.absolutePath
         }
-        return imported
     }
 
     /**
@@ -383,7 +378,7 @@ class MainActivity : FlutterActivity() {
             documentId,
         )
         val rows = mutableListOf<ChildRow>()
-        contentResolver.query(
+        val cursor = contentResolver.query(
             childrenUri,
             arrayOf(
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -393,7 +388,8 @@ class MainActivity : FlutterActivity() {
             null,
             null,
             null,
-        )?.use { cursor ->
+        ) ?: throw IllegalStateException("Cannot read the folder.")
+        cursor.use {
             val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
             val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
             val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)

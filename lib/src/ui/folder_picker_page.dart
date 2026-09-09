@@ -23,6 +23,7 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
   bool _initializing = true;
   bool _loading = false;
   bool _importing = false;
+  int _listGeneration = 0;
   String? _error;
   FolderContents? _contents;
 
@@ -82,6 +83,7 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
   Future<void> _reloadContents() async {
     final treeUri = _treeUri;
     if (treeUri == null) return;
+    final generation = ++_listGeneration;
     setState(() {
       _loading = true;
       _error = null;
@@ -90,7 +92,9 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
       treeUri,
       _currentId,
     );
-    if (!mounted || treeUri != _treeUri) return;
+    if (!mounted || generation != _listGeneration || treeUri != _treeUri) {
+      return;
+    }
     setState(() {
       _loading = false;
       if (contents == null) {
@@ -105,6 +109,7 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
   }
 
   void _enterFolder(FolderEntry folder) {
+    if (_importing || _loading) return;
     setState(() {
       _pathIds.add(folder.documentId);
       _pathNames.add(folder.name);
@@ -114,6 +119,7 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
   }
 
   void _jumpToCrumb(int index) {
+    if (_importing || _loading) return;
     if (index >= _pathIds.length - 1) return;
     setState(() {
       _pathIds.removeRange(index + 1, _pathIds.length);
@@ -125,7 +131,7 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
 
   Future<void> _confirmFolder() async {
     final treeUri = _treeUri;
-    if (treeUri == null || _importing || _loading) return;
+    if (treeUri == null || _importing || _loading || _contents == null) return;
     final hasScores = (_contents?.scores.isNotEmpty ?? false);
     if (!hasScores) {
       final proceed = await showDialog<bool>(
@@ -163,59 +169,68 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          onPressed: _importing ? null : () => Navigator.of(context).pop(),
-          icon: const Icon(Icons.close_rounded),
-          tooltip: '关闭',
-        ),
-        title: const Text('打开目录', maxLines: 1, overflow: TextOverflow.ellipsis),
-        actions: [
-          IconButton(
-            onPressed: _importing ? null : _grantFolder,
-            icon: const Icon(Icons.folder_open_rounded),
-            tooltip: '更换目录',
+    return PopScope(
+      canPop: !_importing,
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            onPressed: _importing ? null : () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.close_rounded),
+            tooltip: '关闭',
           ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: SafeArea(
-        top: false,
-        child: Column(
-          children: [
-            if (_initializing)
-              const Expanded(child: Center(child: CircularProgressIndicator()))
-            else if (_treeUri == null)
-              const Expanded(child: SizedBox.shrink())
-            else ...[
-              _Breadcrumbs(pathNames: _pathNames, onJump: _jumpToCrumb),
-              if (_error != null)
-                _FolderErrorStrip(message: _error!, onGrant: _grantFolder),
-              if (_loading)
-                const LinearProgressIndicator(minHeight: 2)
-              else
-                const SizedBox(height: 2),
-              Expanded(
-                child: _FolderContentsList(
-                  contents: _contents,
-                  loading: _loading,
-                  onEnterFolder: _enterFolder,
-                  hint: _error == null ? '此目录下没有可直接导入的内容。' : null,
-                ),
-              ),
-            ],
+          title: const Text(
+            '打开目录',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          actions: [
+            IconButton(
+              onPressed: _importing ? null : _grantFolder,
+              icon: const Icon(Icons.folder_open_rounded),
+              tooltip: '更换目录',
+            ),
+            const SizedBox(width: 8),
           ],
         ),
+        body: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              if (_initializing)
+                const Expanded(
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else if (_treeUri == null)
+                const Expanded(child: SizedBox.shrink())
+              else ...[
+                _Breadcrumbs(pathNames: _pathNames, onJump: _jumpToCrumb),
+                if (_error != null)
+                  _FolderErrorStrip(message: _error!, onGrant: _grantFolder),
+                if (_loading)
+                  const LinearProgressIndicator(minHeight: 2)
+                else
+                  const SizedBox(height: 2),
+                Expanded(
+                  child: _FolderContentsList(
+                    contents: _contents,
+                    loading: _loading,
+                    onEnterFolder: _enterFolder,
+                    hint: _error == null ? '此目录下没有可直接导入的内容。' : null,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        bottomNavigationBar: _treeUri == null || _initializing
+            ? null
+            : _FolderActionsBar(
+                importing: _importing,
+                canConfirm: !_importing && !_loading && _contents != null,
+                onConfirm: _confirmFolder,
+                onCancel: _importing ? null : () => Navigator.of(context).pop(),
+              ),
       ),
-      bottomNavigationBar: _treeUri == null || _initializing
-          ? null
-          : _FolderActionsBar(
-              importing: _importing,
-              canConfirm: !_importing && !_loading,
-              onConfirm: _confirmFolder,
-              onCancel: _importing ? null : () => Navigator.of(context).pop(),
-            ),
     );
   }
 }
